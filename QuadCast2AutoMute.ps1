@@ -16,25 +16,29 @@ function Stop-CurrentWatcher {
         # No watcher is running.
     }
 
-    $expectedCommand = '-File "{0}" -Mode Watch' -f $PSCommandPath
-    for ($attempt = 0; $attempt -lt 10; $attempt++) {
-        $watchers = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" |
-            Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($expectedCommand, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
-        if ($watchers.Count -eq 0) { return }
-        Start-Sleep -Milliseconds 200
-    }
-    foreach ($watcher in $watchers) {
-        Stop-Process -Id $watcher.ProcessId -Force -ErrorAction Stop
+    $mutex = [Threading.Mutex]::new($false, 'Local\QuadCast2AutoMute')
+    try {
+        try {
+            $stopped = $mutex.WaitOne(5000)
+        } catch [Threading.AbandonedMutexException] {
+            $stopped = $true
+        }
+        if (-not $stopped) {
+            throw 'The existing watcher did not stop within five seconds.'
+        }
+        $mutex.ReleaseMutex()
+    } finally {
+        $mutex.Dispose()
     }
 }
 
 if ($Mode -eq 'Install') {
     $exeName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
     $powershell = Join-Path $PSHOME $exeName
-    $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Mode Watch' -f $PSCommandPath
+    $arguments = '-NoProfile -WindowStyle Hidden -File "{0}" -Mode Watch' -f $PSCommandPath
     $command = '"{0}" {1}' -f $powershell, $arguments
-    New-ItemProperty -Path $runKey -Name $runName -Value $command -PropertyType String -Force | Out-Null
     Stop-CurrentWatcher
+    New-ItemProperty -Path $runKey -Name $runName -Value $command -PropertyType String -Force | Out-Null
     Start-Process -FilePath $powershell -ArgumentList $arguments -WindowStyle Hidden
     Write-Output "Installed and started. Autostart command: $command"
     return
